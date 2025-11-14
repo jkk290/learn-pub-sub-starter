@@ -4,35 +4,74 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 
+	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/routing"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
-	const connectionString = "amqp://guest:guest@localhost:5672/"
-	amqpConnection, err := amqp.Dial(connectionString)
+	const rabbitConnString = "amqp://guest:guest@localhost:5672/"
+
+	conn, err := amqp.Dial(rabbitConnString)
 	if err != nil {
-		log.Fatalf("error creating amqp connection: %v", err)
+		log.Fatalf("could not connect to RabbitMQ: %v", err)
 	}
-	defer amqpConnection.Close()
-	fmt.Println("amqp connection successful!")
-	amqpCh, err := amqpConnection.Channel()
+	defer conn.Close()
+	fmt.Println("Peril game server connected to RabbitMQ!")
+
+	publishCh, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("error creating channel: %v", err)
+		log.Fatalf("could not create channel: %v", err)
 	}
 
-	if err := pubsub.PublishJSON(amqpCh, routing.ExchangePerilDirect, routing.PauseKey, routing.PlayingState{
-		IsPaused: true,
-	}); err != nil {
-		log.Fatalf("error publishing JSON: %v", err)
+	_, _, bindErr := pubsub.DeclareAndBind(conn, routing.ExchangePerilTopic, "game_logs", routing.GameLogSlug, pubsub.Durable)
+	if bindErr != nil {
+		log.Fatalf("error binding queue: %v", bindErr)
 	}
 
-	fmt.Println("Starting Peril server...")
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt)
-	<-signalChan
-	fmt.Println("Server shutting down...")
+	gamelogic.PrintServerHelp()
+
+	for {
+		userInput := gamelogic.GetInput()
+		switch userInput[0] {
+		case "pause":
+			log.Println("sending pause message...")
+			err = pubsub.PublishJSON(
+				publishCh,
+				routing.ExchangePerilDirect,
+				routing.PauseKey,
+				routing.PlayingState{
+					IsPaused: true,
+				},
+			)
+			if err != nil {
+				log.Printf("could not publish time: %v", err)
+			}
+			fmt.Println("Pause message sent!")
+
+		case "resume":
+			log.Println("sending resume message...")
+			err = pubsub.PublishJSON(
+				publishCh,
+				routing.ExchangePerilDirect,
+				routing.PauseKey,
+				routing.PlayingState{
+					IsPaused: false,
+				},
+			)
+			if err != nil {
+				log.Printf("could not publish time: %v", err)
+			}
+			fmt.Println("Resume message sent!")
+
+		case "quit":
+			log.Println("Shutting down server...")
+			os.Exit(0)
+
+		default:
+			log.Println("Unknown command")
+		}
+	}
 }
