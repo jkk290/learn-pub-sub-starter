@@ -35,8 +35,12 @@ func main() {
 	}
 
 	armyMovesQueue := routing.ArmyMovesPrefix + "." + username
-	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, armyMovesQueue, "army_moves.*", pubsub.Transient, handlerMove(gameState)); err != nil {
+	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, armyMovesQueue, "army_moves.*", pubsub.Transient, handlerMove(gameState, ch)); err != nil {
 		log.Fatalf("error subscribing to army move: %v", err)
+	}
+
+	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, "war", routing.WarRecognitionsPrefix+".*", pubsub.Durable, handlerWar(gameState)); err != nil {
+		log.Fatalf("error subscribing to war: %v", err)
 	}
 
 	for {
@@ -76,16 +80,53 @@ func main() {
 	}
 }
 
-func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
-	return func(ps routing.PlayingState) {
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) string {
+	return func(ps routing.PlayingState) string {
 		defer fmt.Print("> ")
 		gs.HandlePause(ps)
+		return "Ack"
 	}
 }
 
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
-	return func(am gamelogic.ArmyMove) {
+func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(gamelogic.ArmyMove) string {
+	return func(am gamelogic.ArmyMove) string {
 		defer fmt.Print("> ")
-		gs.HandleMove(am)
+		outcome := gs.HandleMove(am)
+		switch outcome {
+		case gamelogic.MoveOutComeSafe:
+			return "Ack"
+		case gamelogic.MoveOutcomeMakeWar:
+			if err := pubsub.PublishJSON(ch, routing.ExchangePerilTopic, routing.WarRecognitionsPrefix+"."+gs.Player.Username, gamelogic.RecognitionOfWar{
+				Attacker: am.Player,
+				Defender: gs.GetPlayerSnap(),
+			}); err != nil {
+				return "NackRequeue"
+			}
+			return "Ack"
+		case gamelogic.MoveOutcomeSamePlayer:
+			return "Ack"
+		default:
+			return "NackDiscard"
+		}
+	}
+}
+
+func handlerWar(gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) string {
+	return func(rw gamelogic.RecognitionOfWar) string {
+		defer fmt.Print("> ")
+		warOutcome, _, _ := gs.HandleWar(rw)
+		switch warOutcome {
+		case gamelogic.WarOutcomeNotInvolved:
+			return "NackRequeue"
+		case gamelogic.WarOutcomeNoUnits:
+			return "NackDiscard"
+		case gamelogic.WarOutcomeYouWon:
+			return "Ack"
+		case gamelogic.WarOutcomeDraw:
+			return "Ack"
+		default:
+			fmt.Print("error handling war")
+			return "NackDiscard"
+		}
 	}
 }
