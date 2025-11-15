@@ -14,7 +14,7 @@ func SubscribeJSON[T any](
 	queueType SimpleQueueType,
 	handler func(T),
 ) error {
-	ch, q, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
+	ch, _, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
 		return err
 	}
@@ -27,9 +27,10 @@ func SubscribeJSON[T any](
 		if err := json.Unmarshal(msg.Body, data); err != nil {
 			return err
 		}
-		handler(data)
+		go handler(data)
 		if err := amqp.Delivery.Ack(msg, false); err != nil {
 			return err
 		}
 	}
+	return nil
 }

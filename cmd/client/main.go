@@ -30,6 +30,9 @@ func main() {
 	}
 
 	gameState := gamelogic.NewGameState(username)
+	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient, handlerPause(gameState)); err != nil {
+		log.Fatalf("error subscribing JSON: %v", err)
+	}
 
 	for {
 		userInput := gamelogic.GetInput()
@@ -57,5 +60,12 @@ func main() {
 		default:
 			log.Println("unknown command")
 		}
+	}
+}
+
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(routing.PlayingState) {
+		defer fmt.Print("> ")
+		gs.HandlePause(routing.PlayingState{})
 	}
 }
