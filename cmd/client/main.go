@@ -19,19 +19,24 @@ func main() {
 		log.Fatalf("error connecting to rabbit mq: %v", err)
 	}
 	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatal("error creating channel")
+	}
 	username, err := gamelogic.ClientWelcome()
 	if err != nil {
 		log.Fatalf("error: %v", err)
 	}
 	queueName := routing.PauseKey + "." + username
-	_, _, bindErr := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient)
-	if bindErr != nil {
-		log.Fatalf("error binding queue: %v", bindErr)
-	}
 
 	gameState := gamelogic.NewGameState(username)
 	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.Transient, handlerPause(gameState)); err != nil {
 		log.Fatalf("error subscribing JSON: %v", err)
+	}
+
+	armyMovesQueue := routing.ArmyMovesPrefix + "." + username
+	if err := pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, armyMovesQueue, "army_moves.*", pubsub.Transient, handlerMove(gameState)); err != nil {
+		log.Fatalf("error subscribing to army move: %v", err)
 	}
 
 	for {
@@ -47,7 +52,15 @@ func main() {
 			if err != nil {
 				log.Printf("error moving unit: %v\n", err)
 			}
-			log.Printf("successfully moved: %v\n", armyMove)
+			if err := pubsub.PublishJSON(
+				ch,
+				routing.ExchangePerilTopic,
+				armyMovesQueue,
+				armyMove,
+			); err != nil {
+				log.Println("error moving unit")
+			}
+			log.Printf("move successful %v", armyMove)
 		case "status":
 			gameState.CommandStatus()
 		case "help":
@@ -64,8 +77,15 @@ func main() {
 }
 
 func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
-	return func(routing.PlayingState) {
+	return func(ps routing.PlayingState) {
 		defer fmt.Print("> ")
-		gs.HandlePause(routing.PlayingState{})
+		gs.HandlePause(ps)
+	}
+}
+
+func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
+	return func(am gamelogic.ArmyMove) {
+		defer fmt.Print("> ")
+		gs.HandleMove(am)
 	}
 }
